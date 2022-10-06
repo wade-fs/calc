@@ -1,0 +1,105 @@
+name: App Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  playStoreRelease:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+      - name: Setup JDK
+        uses: actions/setup-java@v2
+        with:
+          java-version: "11"
+          distribution: "adopt"
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+      - name: Build with Gradle
+        run: ./gradlew bundleRelease
+      - uses: r0adkll/sign-android-release@v1
+        name: Sign app APK
+        id: sign_app
+        with:
+          releaseDirectory: app/build/outputs/bundle/release
+          signingKeyBase64: ${{ secrets.SIGNING_KEY }}
+          alias: ${{ secrets.ALIAS }}
+          keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+        env:
+          BUILD_TOOLS_VERSION: "30.0.3"
+      - name: Create service_account.json
+        run: echo '${{ secrets.SERVICE_ACCOUNT_JSON }}' > service_account.json
+      - uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJson: service_account.json
+          packageName: com.gigaworks.tech.calculator
+          releaseFiles: ${{ steps.sign_app.outputs.signedReleaseFile }}
+          status: completed
+          track: beta
+          inAppUpdatePriority: 3
+          whatsNewDirectory: docs/whatsnew
+      - name: Remove service_account.json
+        run: rm service_account.json
+  updateRepo:
+    needs: playStoreRelease
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+      - name: Setup JDK
+        uses: actions/setup-java@v2
+        with:
+          java-version: "11"
+          distribution: "adopt"
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+      - name: Update version code
+        run: ./gradlew bumpVersionCode
+      - name: Commit updates
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "ci: update version.properties"
+          git push
+  githubRelease:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+      - name: Setup JDK
+        uses: actions/setup-java@v2
+        with:
+          java-version: "11"
+          distribution: "adopt"
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+      - name: Build with Gradle
+        run: ./gradlew assembleDebug
+      - name: Check App version
+        run: |
+          APP_VERSION=$(./gradlew -q printVersionName)
+          echo "APP_VERSION = " ${APP_VERSION}
+          echo "APP_VERSION=${APP_VERSION}" >> $GITHUB_ENV
+      - uses: ncipollo/release-action@v1
+        id: upload-release-asset
+        with:
+          name: "Calculator Plus"
+          bodyFile: "docs/whatsnew/whatsnew-en-GB"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          prerelease: false
+          tag: v${{ env.APP_VERSION }}
+          allowUpdates: true
+          artifacts: "app/build/outputs/apk/debug/*.apk"
+          artifactContentType: application/vnd.android.package-archive
+      - uses: openhousepvt/slack@v1.3.2
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        with:
+          status: ${{ job.status }}
+          channel: "#calculator-plus"
+          version: v${{ env.APP_VERSION }}
+          downloadUrl: ${{ steps.upload-release-asset.outputs.html_url }}
+          platform: "Android"
+        if: success()
